@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home Management Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cool: {
+                            bg: '#0e1c24',
+                            card: '#1c2a32',
+                            accent: '#3e5b74',
+                            text: '#d1e8e2',
+                            hover: '#2a3f4d'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-cool-bg text-cool-text min-h-screen flex items-center justify-center">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-5xl font-bold text-center mb-12 text-cool-text">Home Management Dashboard</h1>
+
+        <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-8">
+            <a href="/documents" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-file-alt text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Documents</span>
+            </a>
+            <a href="/todo" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-tasks text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">To-Do List</span>
+            </a>
+            <a href="/shopping" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-shopping-cart text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Shopping List</span>
+            </a>
+            <a href="/calendar" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-calendar-alt text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Calendar</span>
+            </a>
+            <a href="/meals" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-utensils text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Meal Planner</span>
+            </a>
+            <a href="/maintenance" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-home text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Home Maintenance</span>
+            </a>
+            <a href="/budget" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-wallet text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Budget</span>
+            </a>
+            <a href="/settings" class="bg-cool-card rounded-lg shadow-lg p-6 flex flex-col items-center justify-center hover:bg-cool-hover transition duration-300 fade-in">
+                <i class="fas fa-cog text-4xl mb-4"></i>
+                <span class="text-lg font-semibold">Settings</span>
+            </a>
+        </div>
+    </div>
+</body>
+</html>

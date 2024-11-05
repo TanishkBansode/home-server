@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documents</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css" rel="stylesheet">
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        cool: {
+                            bg: '#0e1c24',
+                            card: '#1c2a32',
+                            accent: '#3e5b74',
+                            text: '#d1e8e2'
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .fade-in {
+            animation: fadeIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body class="bg-cool-bg text-cool-text min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-5xl font-bold text-center mb-12 text-cool-text">Documents</h1>
+
+        <div class="grid md:grid-cols-2 gap-8">
+            <div class="bg-cool-card rounded-lg shadow-lg p-6 mb-8" style="max-height: fit-content;">
+                <h2 class="text-2xl font-semibold mb-4 text-cool-text">Upload a File</h2>
+                <form action="/upload" method="post" enctype="multipart/form-data" class="flex flex-col gap-4">
+                    <div class="relative">
+                        <input type="file" name="file" id="fileInput" required class="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10" onchange="updateFileName()">
+                        <div id="fileName" class="bg-cool-accent text-cool-text py-2 px-4 rounded-full text-center cursor-pointer hover:bg-opacity-80 transition duration-300">
+                            <i class="fas fa-cloud-upload-alt mr-2"></i> Choose File
+                        </div>
+                    </div>
+                    <input type="text" name="newFileName" placeholder="File Name" class="bg-cool-accent text-cool-text py-2 px-4 rounded-full focus:outline-none focus:ring-2 focus:ring-cool-text">
+                    <button type="submit" class="bg-cool-accent hover:bg-opacity-80 text-cool-text font-bold py-2 px-4 rounded-full transition duration-300 ease-in-out">
+                        <i class="fas fa-upload mr-2"></i> Upload
+                    </button>
+                </form>
+            </div>
+
+            <div class="bg-cool-card rounded-lg shadow-lg p-6">
+                <h2 class="text-2xl font-semibold mb-4 text-cool-text">Available Files</h2>
+                <div class="relative mb-4">
+                    <input type="text" id="search" placeholder="Search files..." class="w-full p-2 pl-10 bg-cool-accent text-cool-text rounded-full focus:outline-none focus:ring-2 focus:ring-cool-text">
+                    <i class="fas fa-search absolute left-3 top-1/2 transform -translate-y-1/2 text-cool-text opacity-60"></i>
+                </div>
+                <ul id="file-list" class="space-y-2 max-h-96 overflow-y-auto pr-2">
+                    {{range .}}
+                    <li class="fade-in flex items-center justify-between py-2 border-b border-cool-accent">
+                        <div class="flex items-center">
+                            <i class="fas fa-file mr-2 text-cool-text file-icon"></i>
+                            <span class="text-cool-text file-name">{{.}}</span>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button onclick="renameFile(this)" class="text-cool-text hover:text-cool-accent">
+                                <i class="fas fa-edit"></i>
+                            </button>
+                            <a href="/download?file={{.}}" class="text-cool-text hover:text-cool-accent">
+                                <i class="fas fa-download"></i>
+                            </a>
+                            <a href="/public/{{.}}" target="_blank" class="text-cool-text hover:text-cool-accent">
+                                <i class="fas fa-eye"></i>
+                            </a>
+                        </div>
+                    </li>
+                    {{else}}
+                    <p class="text-cool-text opacity-60 italic">No files available.</p>
+                    {{end}}
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('search');
+        const fileList = document.getElementById('file-list');
+        const files = Array.from(fileList.getElementsByTagName('li'));
+
+        searchInput.addEventListener('input', function() {
+            const searchTerm = this.value.toLowerCase();
+            files.forEach(file => {
+                const fileName = file.querySelector('.file-name').textContent.toLowerCase();
+                if (fileName.includes(searchTerm)) {
+                    file.style.display = '';
+                    file.classList.add('fade-in');
+                } else {
+                    file.style.display = 'none';
+                    file.classList.remove('fade-in');
+                }
+            });
+        });
+
+        function getFileIcon(fileName) {
+            const extension = fileName.split('.').pop().toLowerCase();
+            switch(extension) {
+                case 'pdf': return 'fa-file-pdf';
+                case 'jpg':
+                case 'jpeg':
+                case 'png':
+                case 'gif': return 'fa-file-image';
+                case 'doc':
+                case 'docx': return 'fa-file-word';
+                case 'xls':
+                case 'xlsx': return 'fa-file-excel';
+                case 'ppt':
+                case 'pptx': return 'fa-file-powerpoint';
+                case 'zip':
+                case 'rar': return 'fa-file-archive';
+                case 'txt': return 'fa-file-alt';
+                case 'mp3':
+                case 'wav': return 'fa-file-audio';
+                case 'mp4':
+                case 'avi': return 'fa-file-video';
+                case 'js':
+                case 'py':
+                case 'java':
+                case 'cpp':
+                case 'html':
+                case 'css': return 'fa-file-code';
+                default: return 'fa-file';
+            }
+        }
+
+        function updateFileIcons() {
+            document.querySelectorAll('.file-icon').forEach(icon => {
+                const fileName = icon.nextElementSibling.textContent;
+                icon.classList.remove('fa-file');
+                icon.classList.add(getFileIcon(fileName));
+            });
+        }
+
+        updateFileIcons();
+
+        function updateFileName() {
+        const input = document.getElementById('fileInput');
+        const fileNameDiv = document.getElementById('fileName');
+
+        if (input.files.length > 0) {
+            fileNameDiv.textContent = input.files[0].name; // Display the uploaded file name
+            fileNameDiv.classList.remove('bg-cool-accent'); // Optionally change background color
+            fileNameDiv.classList.add('bg-green-500'); // Change to green (or any color) on upload
+        } else {
+            fileNameDiv.innerHTML = '<i class="fas fa-cloud-upload-alt mr-2"></i> Choose File'; // Reset to default text
+            fileNameDiv.classList.add('bg-cool-accent'); // Reset background color
+            fileNameDiv.classList.remove('bg-green-500'); // Remove green background
+        }
+    }
+
+        function renameFile(button) {
+            const listItem = button.closest('li');
+            const fileNameElement = listItem.querySelector('.file-name');
+            const currentName = fileNameElement.textContent;
+            const newName = prompt('Enter new file name:', currentName);
+            
+            if (newName && newName !== currentName) {
+                const formData = new FormData();
+                formData.append('oldFileName', currentName);
+                formData.append('newFileName', newName);
+
+                fetch('/rename', {
+                    method: 'POST',
+                    body: formData,
+                })
+                .then(response => {
+                    if (response.ok) {
+                        window.location.reload();
+                    } else {
+                        alert('Failed to rename file');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error:', error);
+                });
+            }
+        }
+    </script>
+</body>
+</html>
