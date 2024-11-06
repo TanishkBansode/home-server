@@ -13,12 +13,6 @@ import (
 const uploadPath = "./public"
 
 func renderIndex(w http.ResponseWriter, r *http.Request) {
-    files, err := listFiles(uploadPath)
-    if err != nil {
-        http.Error(w, "Unable to list files", http.StatusInternalServerError)
-        return
-    }
-
     tmpl, _ := template.ParseFiles("templates/home.html")
     tmpl.Execute(w, files)
 }
