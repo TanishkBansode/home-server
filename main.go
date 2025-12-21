@@ -29,45 +29,69 @@ func initPaths() {
 	// Check environment variable first
 	if path := os.Getenv("STORAGE_PATH"); path != "" {
 		uploadPath = path
-	} else if _, err := os.Stat("/storage"); err == nil {
-		// Android/Termux environment detected
-		// Try to find a physical SD card (not 'emulated' or 'self')
+	} else {
+		// Try to detect Termux/Android environment and prioritize SD card storage
 		foundSD := false
-		if entries, err := os.ReadDir("/storage"); err == nil {
-			for _, entry := range entries {
-				if entry.IsDir() && entry.Name() != "emulated" && entry.Name() != "self" {
-					// Likely a physical SD card (e.g., ABCD-1234)
-					// Termux has primary access to its own package directory on SD cards
-					sdPath := filepath.Join("/storage", entry.Name(), "Android/data/com.termux/files/home-server")
-					if err := os.MkdirAll(sdPath, 0755); err == nil {
-						uploadPath = sdPath
+		
+		// Method 1: Check for Termux's external storage (most reliable for Termux)
+		home := os.Getenv("HOME")
+		if home != "" {
+			// Try Termux's external storage (SD card) first
+			termuxSD := filepath.Join(home, "storage/external-1/home-server")
+			if _, err := os.Stat(filepath.Join(home, "storage/external-1")); err == nil {
+				if err := os.MkdirAll(termuxSD, 0755); err == nil {
+					uploadPath = termuxSD
+					foundSD = true
+					log.Printf("Using Termux external storage (SD card): %s", uploadPath)
+				}
+			}
+			
+			// If no external storage found, try internal storage
+			if !foundSD {
+				termuxInternal := filepath.Join(home, "storage/shared/home-server")
+				if _, err := os.Stat(filepath.Join(home, "storage/shared")); err == nil {
+					if err := os.MkdirAll(termuxInternal, 0755); err == nil {
+						uploadPath = termuxInternal
 						foundSD = true
-						break
+						log.Printf("Using Termux internal shared storage: %s", uploadPath)
 					}
 				}
 			}
 		}
-
+		
+		// Method 2: Check for Android's /storage directory (alternative approach)
 		if !foundSD {
-			// Try Termux's ~/storage/external-1 if it exists
-			home := os.Getenv("HOME")
-			if home != "" {
-				termuxSD := filepath.Join(home, "storage/external-1/home-server")
-				if err := os.MkdirAll(termuxSD, 0755); err == nil {
-					uploadPath = termuxSD
-					foundSD = true
+			if _, err := os.Stat("/storage"); err == nil {
+				if entries, err := os.ReadDir("/storage"); err == nil {
+					for _, entry := range entries {
+						if entry.IsDir() && entry.Name() != "emulated" && entry.Name() != "self" {
+							// Likely a physical SD card (e.g., ABCD-1234)
+							sdPath := filepath.Join("/storage", entry.Name(), "Android/data/com.termux/files/home-server")
+							if err := os.MkdirAll(sdPath, 0755); err == nil {
+								uploadPath = sdPath
+								foundSD = true
+								log.Printf("Using Android SD card storage: %s", uploadPath)
+								break
+							}
+						}
+					}
 				}
 			}
 		}
-
+		
+		// Method 3: Fallback to standard Android shared storage
 		if !foundSD {
-			// Fallback to internal shared storage
 			uploadPath = "/sdcard/home-server"
+			log.Printf("Using Android internal shared storage: %s", uploadPath)
 		}
-	} else {
-		// Fallback for regular Linux
-		uploadPath = "data"
+		
+		// Method 4: Fallback for regular Linux
+		if !foundSD {
+			uploadPath = "data"
+			log.Printf("Using local data directory: %s", uploadPath)
+		}
 	}
+	
 	uploadPath = filepath.Clean(uploadPath)
 	metadataFile = filepath.Join(uploadPath, ".metadata.json")
 	sessionsFile = filepath.Join(uploadPath, ".sessions.json")
@@ -649,6 +673,13 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 			newName = header.Filename
 		}
 
+		// Handle folder upload: if uploading to a specific path
+		uploadPathParam := r.FormValue("path")
+		if uploadPathParam != "" {
+			// Upload to specific directory
+			newName = filepath.Join(uploadPathParam, filepath.Base(newName))
+		}
+
 		if err := saveUploadedFile(file, newName, header.Size, session.Username); err != nil {
 			http.Error(w, "Failed to save file", http.StatusInternalServerError)
 			logRequest(r, http.StatusInternalServerError)
@@ -657,7 +688,8 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 
 		log.Printf("File uploaded by %s: %s", session.Username, newName)
 	} else {
-		// Multiple files
+		// Multiple files - handle folder uploads
+		uploadPathParam := r.FormValue("path")
 		for _, fileHeader := range files {
 			file, err := fileHeader.Open()
 			if err != nil {
@@ -665,14 +697,35 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			if err := saveUploadedFile(file, fileHeader.Filename, fileHeader.Size, session.Username); err != nil {
-				log.Printf("Error saving file %s: %v", fileHeader.Filename, err)
+			// Preserve folder structure from the original filename
+			originalFilename := fileHeader.Filename
+			
+			// If uploading to a specific path, combine it with the original structure
+			var targetFilename string
+			if uploadPathParam != "" {
+				// Upload to specific directory while preserving subfolder structure
+				if strings.Contains(originalFilename, string(filepath.Separator)) {
+					// File has subfolder structure, preserve it
+					targetFilename = filepath.Join(uploadPathParam, originalFilename)
+				} else {
+					// Single file, upload to target directory
+					targetFilename = filepath.Join(uploadPathParam, originalFilename)
+				}
+			} else {
+				// Upload to root, preserve original structure
+				targetFilename = originalFilename
+			}
+
+			log.Printf("Uploading file: %s -> %s", originalFilename, targetFilename)
+
+			if err := saveUploadedFile(file, targetFilename, fileHeader.Size, session.Username); err != nil {
+				log.Printf("Error saving file %s: %v", targetFilename, err)
 				file.Close()
 				continue
 			}
 
 			file.Close()
-			log.Printf("File uploaded by %s: %s", session.Username, fileHeader.Filename)
+			log.Printf("File uploaded by %s: %s", session.Username, targetFilename)
 		}
 	}
 
@@ -685,7 +738,6 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 	logRequest(r, http.StatusSeeOther)
 }
 
-// Save uploaded file and update metadata
 // Save uploaded file and update metadata
 func saveUploadedFile(file io.Reader, filename string, size int64, username string) error {
 	// Filename can be "folder/file.txt"
@@ -720,7 +772,7 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 	metaMutex.Lock()
 	// Create directory metadata for parents
 	dirName := filepath.Dir(cleanName)
-	if dirName != "." && dirName != "" {
+	if dirName != "." && dirName != "" && dirName != cleanName {
 		parts := strings.Split(dirName, string(filepath.Separator))
 		current := ""
 		for _, part := range parts {
@@ -749,6 +801,10 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 		Size:       written,
 		IsDir:      false,
 	}
+	metaMutex.Unlock()
+
+	log.Printf("Saved file metadata: %s (size: %d)", cleanName, written)
+	
 	metaMutex.Unlock()
 
 	return saveMetadata()
