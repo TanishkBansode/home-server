@@ -66,8 +66,9 @@ func initPaths() {
 		}
 	} else {
 		// Fallback for regular Linux
-		uploadPath = "./data"
+		uploadPath = "data"
 	}
+	uploadPath = filepath.Clean(uploadPath)
 	metadataFile = filepath.Join(uploadPath, ".metadata.json")
 	sessionsFile = filepath.Join(uploadPath, ".sessions.json")
 	usersFile = filepath.Join(uploadPath, ".users.json")
@@ -458,7 +459,9 @@ func getFilesWithMetadata(viewer string, currentPath string) []FileInfo {
 	fullPath := filepath.Join(uploadPath, currentPath)
 
 	// Prevent directory traversal
-	if !strings.HasPrefix(fullPath, uploadPath) {
+	rel, err := filepath.Rel(uploadPath, fullPath)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		log.Printf("Traversal attempt or error: path=%s, uploadPath=%s, err=%v", fullPath, uploadPath, err)
 		return nil
 	}
 
@@ -562,6 +565,7 @@ func renderFilesPage(w http.ResponseWriter, r *http.Request) {
 	tmpl, err := template.New("files.html").Funcs(template.FuncMap{
 		"formatSize": formatSize,
 		"formatDate": formatDate,
+		"dir":        filepath.Dir,
 	}).ParseFiles("templates/files.html")
 
 	if err != nil {
@@ -672,7 +676,12 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	path := r.URL.Query().Get("path")
+	if path != "" {
+		http.Redirect(w, r, "/?path="+path, http.StatusSeeOther)
+	} else {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+	}
 	logRequest(r, http.StatusSeeOther)
 }
 
@@ -682,6 +691,8 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 	// Filename can be "folder/file.txt"
 	// Validate path to prevent breakout
 	cleanName := filepath.Clean(filename)
+	cleanName = strings.TrimPrefix(cleanName, "/")
+	cleanName = strings.TrimPrefix(cleanName, "./")
 	if strings.Contains(cleanName, "..") {
 		return fmt.Errorf("invalid filename")
 	}
@@ -707,11 +718,32 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 
 	// Update metadata
 	metaMutex.Lock()
+	// Create directory metadata for parents
+	dirName := filepath.Dir(cleanName)
+	if dirName != "." && dirName != "" {
+		parts := strings.Split(dirName, string(filepath.Separator))
+		current := ""
+		for _, part := range parts {
+			if current == "" {
+				current = part
+			} else {
+				current = filepath.Join(current, part)
+			}
+			if _, exists := fileMetadata[current]; !exists {
+				fileMetadata[current] = FileInfo{
+					Name:       part,
+					UploadedBy: username,
+					UploadedAt: time.Now(),
+					Size:       0,
+					IsDir:      true,
+				}
+			}
+		}
+	}
+
 	// For metadata, we use the relative path as key
 	fileMetadata[cleanName] = FileInfo{
-		Name: cleanName, // Store full relative path in metadata value too? Or just basename?
-		// Actually getFilesWithMetadata uses the key to find it.
-		// Storing full path is safer.
+		Name:       filepath.Base(cleanName),
 		UploadedBy: username,
 		UploadedAt: time.Now(),
 		Size:       written,
@@ -989,6 +1021,7 @@ func main() {
 	http.HandleFunc("/share", toggleShare)
 	http.HandleFunc("/shared/", serveSharedFile)
 	http.HandleFunc("/files/", requireAuth(handleServeFile))
+	http.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("static"))))
 
 	// Start server
 	fmt.Printf("Server started at %s\n", serverPort)

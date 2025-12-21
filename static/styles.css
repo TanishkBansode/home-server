@@ -231,7 +231,6 @@ a:hover {
     cursor: pointer;
     background: var(--bg-app);
     position: relative;
-    overflow: hidden;
 }
 
 .dropzone:hover, .dropzone.dragover {

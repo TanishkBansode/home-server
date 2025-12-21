@@ -40,23 +40,16 @@
                 <!-- Keep track of current path for uploads -->
                 <input type="hidden" id="currentPath" value="{{.CurrentPath}}">
 
-                <div class="dropzone" id="dropzone">
-                    <div class="dropzone-icon">
-                        <i class="fas fa-cloud-upload-alt"></i>
-                    </div>
-                    <h3>Upload Files to CloudDrive</h3>
-                    <p style="color: var(--text-muted); margin-bottom: 2rem;">Drag & drop files here or use the buttons
-                        below</p>
-
+                <div style="display: flex; justify-content: center; margin-bottom: 2rem;">
                     <div style="position: relative; display: inline-block;">
-                        <button type="button" class="btn btn-primary" onclick="toggleUploadMenu()"
-                            style="padding: 0.75rem 1.5rem; font-size: 1rem; box-shadow: var(--shadow-md);">
+                        <button type="button" id="newButton" class="btn btn-primary" onclick="toggleUploadMenu()"
+                            style="padding: 0.8rem 2.8rem; font-size: 1.1rem; box-shadow: var(--shadow-md); border-radius: 50px;">
                             <i class="fas fa-plus"></i> New
                         </button>
 
                         <!-- Dropdown Menu -->
                         <div id="uploadMenu"
-                            style="display: none; position: absolute; top: 120%; left: 50%; transform: translateX(-50%); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); z-index: 100; min-width: 180px; overflow: hidden;">
+                            style="display: none; position: absolute; top: 120%; left: 50%; transform: translateX(-50%); background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius-sm); box-shadow: var(--shadow-lg); z-index: 1000; min-width: 200px; overflow: hidden;">
                             <button type="button" class="dropdown-item"
                                 onclick="document.getElementById('fileInput').click(); toggleUploadMenu();">
                                 <i class="fas fa-file-upload"></i> File upload
@@ -67,16 +60,19 @@
                             </button>
                         </div>
                     </div>
+                </div>
+
+                <div class="dropzone" id="dropzone">
+                    <div class="dropzone-icon">
+                        <i class="fas fa-cloud-upload-alt"></i>
+                    </div>
+                    <h3>Upload Files to CloudDrive</h3>
+                    <p style="color: var(--text-muted); margin-bottom: 0;">Drag & drop files here</p>
 
                     <!-- Selected Files Preview -->
                     <div id="selectedFiles" style="margin-top: 1.5rem; display: none;">
                         <div style="display: flex; gap: 0.5rem; flex-wrap: wrap; justify-content: center;"
                             id="filePreview"></div>
-
-                        <button type="button" class="btn btn-primary" id="uploadBtn" onclick="uploadFiles()"
-                            style="margin-top: 1.5rem; width: 100%; max-width: 300px;">
-                            <i class="fas fa-upload"></i> Start Upload
-                        </button>
                     </div>
 
                     <!-- Progress Bar -->
@@ -294,6 +290,8 @@
         const galleryGrid = document.getElementById('galleryGrid');
 
         function setView(mode) {
+            if (!listViewContainer || !galleryGrid) return;
+
             if (mode === 'grid') {
                 listViewContainer.style.display = 'none';
                 galleryGrid.style.display = 'grid';
@@ -326,46 +324,95 @@
         const dropzone = document.getElementById('dropzone');
         const selectedFiles = document.getElementById('selectedFiles');
         const filePreview = document.getElementById('filePreview');
-        const uploadBtn = document.getElementById('uploadBtn');
 
-        // Unified file list
-        let filesToUpload = new DataTransfer();
-
-        function handleNewFiles(files) {
+        async function handleNewFiles(files) {
+            console.log("Files selected:", files.length);
             if (files.length > 0) {
-                for (let i = 0; i < files.length; i++) {
-                    filesToUpload.items.add(files[i]);
-                }
-                updateFilePreview();
+                updateFilePreview(files);
+                await uploadFiles(files);
             }
+        }
+
+        function traverseFileTree(entry, path = "") {
+            return new Promise((resolve) => {
+                if (entry.isFile) {
+                    entry.file((file) => {
+                        file.fullPath = path + entry.name;
+                        resolve([file]);
+                    });
+                } else if (entry.isDirectory) {
+                    const dirReader = entry.createReader();
+                    const readAllEntries = (reader) => {
+                        reader.readEntries(async (entries) => {
+                            if (entries.length > 0) {
+                                const promises = entries.map(e => traverseFileTree(e, path + entry.name + "/"));
+                                const results = await Promise.all(promises);
+                                const otherEntries = await readAllEntries(reader);
+                                resolve([...results.flat(), ...otherEntries]);
+                            } else {
+                                resolve([]);
+                            }
+                        });
+                    };
+                    readAllEntries(dirReader);
+                }
+            });
         }
 
         fileInput.addEventListener('change', (e) => handleNewFiles(e.target.files));
         folderInput.addEventListener('change', (e) => handleNewFiles(e.target.files));
 
-        function updateFilePreview() {
-            const files = filesToUpload.files;
+        function updateFilePreview(files) {
             if (files.length > 0) {
                 filePreview.innerHTML = '';
-                const maxPreview = 5;
 
-                for (let i = 0; i < Math.min(files.length, maxPreview); i++) {
-                    const tag = document.createElement('div');
-                    tag.style.cssText = 'background: var(--bg-input); padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.8rem; border: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem;';
-                    tag.innerHTML = `<i class="fas fa-file"></i> ${files[i].name}`;
-                    filePreview.appendChild(tag);
+                // Group by top-level folder if possible
+                const groups = new Map();
+                const orphans = [];
+
+                for (let i = 0; i < files.length; i++) {
+                    const f = files[i];
+                    const path = f.fullPath || f.webkitRelativePath || "";
+                    if (path.includes('/')) {
+                        const root = path.split('/')[0];
+                        groups.set(root, (groups.get(root) || 0) + 1);
+                    } else {
+                        orphans.push(f.name);
+                    }
                 }
 
-                if (files.length > maxPreview) {
+                const maxPreview = 5;
+                let shown = 0;
+
+                groups.forEach((count, name) => {
+                    if (shown < maxPreview) {
+                        const tag = document.createElement('div');
+                        tag.style.cssText = 'background: var(--bg-input); padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.8rem; border: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem;';
+                        tag.innerHTML = `<i class="fas fa-folder"></i> ${name} (${count} files)`;
+                        filePreview.appendChild(tag);
+                        shown++;
+                    }
+                });
+
+                orphans.forEach(name => {
+                    if (shown < maxPreview) {
+                        const tag = document.createElement('div');
+                        tag.style.cssText = 'background: var(--bg-input); padding: 0.25rem 0.75rem; border-radius: 20px; font-size: 0.8rem; border: 1px solid var(--border); display: flex; align-items: center; gap: 0.5rem;';
+                        tag.innerHTML = `<i class="fas fa-file"></i> ${name}`;
+                        filePreview.appendChild(tag);
+                        shown++;
+                    }
+                });
+
+                const totalItems = groups.size + orphans.length;
+                if (totalItems > maxPreview) {
                     const moreTag = document.createElement('div');
                     moreTag.style.cssText = 'color: var(--text-muted); font-size: 0.8rem; padding: 0.25rem;';
-                    moreTag.textContent = `+${files.length - maxPreview} more`;
+                    moreTag.textContent = `+${totalItems - maxPreview} more`;
                     filePreview.appendChild(moreTag);
                 }
 
                 selectedFiles.style.display = 'block';
-                const uploadBtnText = document.querySelector('#uploadBtn');
-                uploadBtnText.innerHTML = `<i class="fas fa-upload"></i> Upload ${files.length} File${files.length > 1 ? 's' : ''}`;
             }
         }
 
@@ -375,38 +422,53 @@
             dropzone.classList.add('dragover');
         });
         dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
-        dropzone.addEventListener('drop', (e) => {
+        dropzone.addEventListener('drop', async (e) => {
             e.preventDefault();
             dropzone.classList.remove('dragover');
-            handleNewFiles(e.dataTransfer.files);
+
+            const items = e.dataTransfer.items;
+            if (items) {
+                const files = [];
+                const promises = [];
+                for (let i = 0; i < items.length; i++) {
+                    const entry = items[i].webkitGetAsEntry();
+                    if (entry) {
+                        promises.push(traverseFileTree(entry));
+                    }
+                }
+                const results = await Promise.all(promises);
+                results.forEach(fileList => files.push(...fileList));
+                handleNewFiles(files);
+            } else {
+                handleNewFiles(e.dataTransfer.files);
+            }
+        });
+
+        dropzone.addEventListener('click', () => {
+            fileInput.click();
         });
 
         // Upload Logic
-        function uploadFiles() {
-            if (filesToUpload.files.length === 0) return;
+        function uploadFiles(files) {
+            console.log("Starting upload of", files.length, "files");
+            if (!files || files.length === 0) {
+                console.error("No files to upload");
+                return;
+            }
 
             const formData = new FormData();
-            const currentPath = document.getElementById('currentPath').value;
+            const currentPathInput = document.getElementById('currentPath');
+            const currentPath = currentPathInput ? currentPathInput.value : '';
+            console.log("Current path for upload:", currentPath);
 
-            for (let i = 0; i < filesToUpload.files.length; i++) {
-                const file = filesToUpload.files[i];
-                // Check if webkitRelativePath exists (folder upload)
-                let filename = file.name;
-                if (file.webkitRelativePath) {
-                    filename = file.webkitRelativePath;
-                }
-
-                // If we are in a subfolder, prepend currentPath
-                // BUT: If it's a folder upload (webkitRelativePath), it already has structure.
-                // We should probably just respect webkitRelativePath relative to currentPath.
-                // If it's a single file, it has no path.
+            for (let i = 0; i < files.length; i++) {
+                const file = files[i];
+                let filename = file.fullPath || file.webkitRelativePath || file.name;
 
                 let finalPath = filename;
                 if (currentPath) {
                     finalPath = currentPath + '/' + filename;
                 }
-
-                // We append with the filename as the 3rd argument
                 formData.append('files', file, finalPath);
             }
 
@@ -417,36 +479,40 @@
             const progressPercent = document.getElementById('progressPercent');
             const progressText = document.getElementById('progressText');
 
-            progressContainer.style.display = 'block';
-            document.getElementById('uploadBtn').disabled = true;
+            if (progressContainer) progressContainer.style.display = 'block';
 
             xhr.upload.addEventListener('progress', (e) => {
                 if (e.lengthComputable) {
                     const percent = Math.round((e.loaded / e.total) * 100);
-                    progressBar.style.width = percent + '%';
-                    progressPercent.textContent = percent + '%';
+                    if (progressBar) progressBar.style.width = percent + '%';
+                    if (progressPercent) progressPercent.textContent = percent + '%';
                 }
             });
 
             xhr.addEventListener('load', () => {
+                console.log("Upload response status:", xhr.status);
                 if (xhr.status >= 200 && xhr.status < 300 || xhr.status === 303) {
-                    progressText.textContent = 'Complete! Reloading...';
-                    progressBar.style.background = 'var(--success)';
+                    if (progressText) progressText.textContent = 'Complete! Reloading...';
+                    if (progressBar) progressBar.style.background = 'var(--success)';
                     setTimeout(() => window.location.reload(), 800);
                 } else {
-                    progressText.textContent = 'Failed';
-                    progressText.style.color = 'var(--danger)';
-                    document.getElementById('uploadBtn').disabled = false;
+                    if (progressText) {
+                        progressText.textContent = 'Failed: ' + xhr.status;
+                        progressText.style.color = 'var(--danger)';
+                    }
                 }
             });
 
             xhr.addEventListener('error', () => {
-                progressText.textContent = 'Error';
-                progressText.style.color = 'var(--danger)';
-                document.getElementById('uploadBtn').disabled = false;
+                console.error("XHR error during upload");
+                if (progressText) {
+                    progressText.textContent = 'Error';
+                    progressText.style.color = 'var(--danger)';
+                }
             });
 
-            xhr.open('POST', '/upload');
+            // Pass current path as query param too, for easier redirect handle in backend
+            xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath));
             xhr.send(formData);
         }
 
@@ -510,9 +576,11 @@
         // Close menu when clicking outside
         document.addEventListener('click', (e) => {
             const menu = document.getElementById('uploadMenu');
-            const btn = document.querySelector('button[onclick="toggleUploadMenu()"]');
-            if (menu.style.display === 'block' && !menu.contains(e.target) && !btn.contains(e.target)) {
-                menu.style.display = 'none';
+            const btn = document.getElementById('newButton');
+            if (menu && menu.style.display === 'block') {
+                if (!menu.contains(e.target) && (!btn || !btn.contains(e.target))) {
+                    menu.style.display = 'none';
+                }
             }
         });
 
