@@ -846,8 +846,6 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 	metaMutex.Unlock()
 
 	log.Printf("Saved file metadata: %s (size: %d)", cleanName, written)
-	
-	metaMutex.Unlock()
 
 	return saveMetadata()
 }
