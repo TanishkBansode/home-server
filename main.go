@@ -43,6 +43,7 @@ func initPaths() {
 					uploadPath = termuxSD
 					foundSD = true
 					log.Printf("Using Termux external storage (SD card): %s", uploadPath)
+					log.Printf("NOTE: Files stored here should be visible in Android file managers")
 				}
 			}
 			
@@ -54,7 +55,16 @@ func initPaths() {
 						uploadPath = termuxInternal
 						foundSD = true
 						log.Printf("Using Termux internal shared storage: %s", uploadPath)
+						log.Printf("NOTE: Files stored here should be visible in Android file managers at /storage/emulated/0/home-server")
 					}
+				}
+			}
+			
+			// If Termux storage is not accessible, check if termux-setup-storage needs to be run
+			if !foundSD {
+				if _, err := os.Stat(filepath.Join(home, "storage")); err != nil {
+					log.Printf("Termux storage not accessible. Run 'termux-setup-storage' to grant storage permissions.")
+					log.Printf("Without storage permissions, files will only be accessible within Termux at: %s/data", home)
 				}
 			}
 		}
@@ -648,20 +658,39 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse multipart form (max 100MB)
-	err := r.ParseMultipartForm(100 << 20)
+	// Parse multipart form (max 500MB for large uploads)
+	// Note: This limit applies to the entire request body, not per file
+	err := r.ParseMultipartForm(500 << 20)
 	if err != nil {
 		log.Printf("Error parsing multipart form: %v", err)
-		http.Error(w, "Failed to parse form", http.StatusBadRequest)
+		// Provide more specific error message
+		if strings.Contains(err.Error(), "request body too large") {
+			http.Error(w, "Upload too large. Maximum total size: 500MB", http.StatusRequestEntityTooLarge)
+		} else if strings.Contains(err.Error(), "EOF") {
+			http.Error(w, "Upload interrupted or incomplete", http.StatusBadRequest)
+		} else {
+			http.Error(w, "Failed to parse form: "+err.Error(), http.StatusBadRequest)
+		}
 		logRequest(r, http.StatusBadRequest)
 		return
 	}
 
 	files := r.MultipartForm.File["files"]
+	
+	// Limit the number of files that can be uploaded at once to prevent memory issues
+	const maxFilesAtOnce = 1000
+	if len(files) > maxFilesAtOnce {
+		log.Printf("Too many files in upload: %d (max %d)", len(files), maxFilesAtOnce)
+		http.Error(w, fmt.Sprintf("Too many files. Maximum %d files at once", maxFilesAtOnce), http.StatusBadRequest)
+		logRequest(r, http.StatusBadRequest)
+		return
+	}
+	
 	if len(files) == 0 {
 		// Try single file field
 		file, header, err := r.FormFile("file")
 		if err != nil {
+			log.Printf("No files provided in upload: %v", err)
 			http.Error(w, "No files provided", http.StatusBadRequest)
 			logRequest(r, http.StatusBadRequest)
 			return
@@ -680,8 +709,10 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 			newName = filepath.Join(uploadPathParam, filepath.Base(newName))
 		}
 
+		log.Printf("Attempting to save single file: %s", newName)
 		if err := saveUploadedFile(file, newName, header.Size, session.Username); err != nil {
-			http.Error(w, "Failed to save file", http.StatusInternalServerError)
+			log.Printf("Failed to save file %s: %v", newName, err)
+			http.Error(w, "Failed to save file: "+err.Error(), http.StatusInternalServerError)
 			logRequest(r, http.StatusInternalServerError)
 			return
 		}
@@ -690,10 +721,14 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 	} else {
 		// Multiple files - handle folder uploads
 		uploadPathParam := r.FormValue("path")
+		successCount := 0
+		failCount := 0
+		
 		for _, fileHeader := range files {
 			file, err := fileHeader.Open()
 			if err != nil {
 				log.Printf("Error opening file %s: %v", fileHeader.Filename, err)
+				failCount++
 				continue
 			}
 
@@ -721,11 +756,18 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 			if err := saveUploadedFile(file, targetFilename, fileHeader.Size, session.Username); err != nil {
 				log.Printf("Error saving file %s: %v", targetFilename, err)
 				file.Close()
+				failCount++
 				continue
 			}
 
 			file.Close()
 			log.Printf("File uploaded by %s: %s", session.Username, targetFilename)
+			successCount++
+		}
+		
+		log.Printf("Batch upload completed: %d successful, %d failed", successCount, failCount)
+		if failCount > 0 {
+			log.Printf("Warning: %d files failed to upload out of %d", failCount, successCount + failCount)
 		}
 	}
 

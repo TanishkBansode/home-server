@@ -456,6 +456,34 @@
                 return;
             }
 
+            // Check for too many files
+            const maxFilesAtOnce = 1000;
+            if (files.length > maxFilesAtOnce) {
+                console.error("Too many files selected:", files.length);
+                const progressText = document.getElementById('progressText');
+                if (progressText) {
+                    progressText.textContent = 'Too many files. Max ' + maxFilesAtOnce;
+                    progressText.style.color = 'var(--danger)';
+                }
+                return;
+            }
+
+            // Check total size (approximate)
+            let totalSize = 0;
+            for (let i = 0; i < files.length; i++) {
+                totalSize += files[i].size || 0;
+            }
+            const maxSizeMB = 500;
+            if (totalSize > maxSizeMB * 1024 * 1024) {
+                console.error("Upload too large:", totalSize, "bytes");
+                const progressText = document.getElementById('progressText');
+                if (progressText) {
+                    progressText.textContent = 'Upload too large. Max ' + maxSizeMB + 'MB';
+                    progressText.style.color = 'var(--danger)';
+                }
+                return;
+            }
+
             const formData = new FormData();
             const currentPathInput = document.getElementById('currentPath');
             const currentPath = currentPathInput ? currentPathInput.value : '';
@@ -497,22 +525,40 @@
                     setTimeout(() => window.location.reload(), 800);
                 } else {
                     if (progressText) {
-                        progressText.textContent = 'Failed: ' + xhr.status;
+                        progressText.textContent = 'Failed: ' + xhr.status + ' - ' + xhr.statusText;
                         progressText.style.color = 'var(--danger)';
                     }
+                    console.error("Upload failed with status:", xhr.status, xhr.statusText);
                 }
             });
 
             xhr.addEventListener('error', () => {
-                console.error("XHR error during upload");
+                console.error("XHR error during upload", xhr.status, xhr.statusText);
                 if (progressText) {
-                    progressText.textContent = 'Error';
+                    progressText.textContent = 'Network Error - Check connection';
+                    progressText.style.color = 'var(--danger)';
+                }
+            });
+
+            xhr.addEventListener('abort', () => {
+                console.error("Upload aborted");
+                if (progressText) {
+                    progressText.textContent = 'Upload cancelled';
+                    progressText.style.color = 'var(--warning)';
+                }
+            });
+
+            xhr.addEventListener('timeout', () => {
+                console.error("Upload timeout");
+                if (progressText) {
+                    progressText.textContent = 'Timeout - Try smaller files';
                     progressText.style.color = 'var(--danger)';
                 }
             });
 
             // Pass current path as query param too, for easier redirect handle in backend
             xhr.open('POST', '/upload?path=' + encodeURIComponent(currentPath));
+            xhr.timeout = 300000; // 5 minutes timeout for large uploads
             xhr.send(formData);
         }
 
