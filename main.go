@@ -29,9 +29,41 @@ func initPaths() {
 	// Check environment variable first
 	if path := os.Getenv("STORAGE_PATH"); path != "" {
 		uploadPath = path
-	} else if _, err := os.Stat("/sdcard"); err == nil {
-		// Running on Termux/Android
-		uploadPath = "/sdcard/home-server"
+	} else if _, err := os.Stat("/storage"); err == nil {
+		// Android/Termux environment detected
+		// Try to find a physical SD card (not 'emulated' or 'self')
+		foundSD := false
+		if entries, err := os.ReadDir("/storage"); err == nil {
+			for _, entry := range entries {
+				if entry.IsDir() && entry.Name() != "emulated" && entry.Name() != "self" {
+					// Likely a physical SD card (e.g., ABCD-1234)
+					// Termux has primary access to its own package directory on SD cards
+					sdPath := filepath.Join("/storage", entry.Name(), "Android/data/com.termux/files/home-server")
+					if err := os.MkdirAll(sdPath, 0755); err == nil {
+						uploadPath = sdPath
+						foundSD = true
+						break
+					}
+				}
+			}
+		}
+
+		if !foundSD {
+			// Try Termux's ~/storage/external-1 if it exists
+			home := os.Getenv("HOME")
+			if home != "" {
+				termuxSD := filepath.Join(home, "storage/external-1/home-server")
+				if err := os.MkdirAll(termuxSD, 0755); err == nil {
+					uploadPath = termuxSD
+					foundSD = true
+				}
+			}
+		}
+
+		if !foundSD {
+			// Fallback to internal shared storage
+			uploadPath = "/sdcard/home-server"
+		}
 	} else {
 		// Fallback for regular Linux
 		uploadPath = "./data"
@@ -52,6 +84,7 @@ type FileInfo struct {
 	UploadedAt time.Time `json:"uploaded_at"`
 	Size       int64     `json:"size"`
 	Shared     bool      `json:"shared"`
+	IsDir      bool      `json:"is_dir"`
 }
 
 // Session stores user session data
@@ -292,6 +325,7 @@ func handleLogin(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		MaxAge:   86400 * 30, // 30 days
 		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
 	})
 
 	http.Redirect(w, r, "/", http.StatusSeeOther)
@@ -346,8 +380,8 @@ func handleSignup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if len(password) < 4 {
-		renderSignupWithError(w, r, "Password must be at least 4 characters")
+	if len(password) < 8 {
+		renderSignupWithError(w, r, "Password must be at least 8 characters")
 		return
 	}
 
@@ -420,8 +454,15 @@ func requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 }
 
 // Get file list with metadata (filtered by viewer)
-func getFilesWithMetadata(viewer string) []FileInfo {
-	entries, err := os.ReadDir(uploadPath)
+func getFilesWithMetadata(viewer string, currentPath string) []FileInfo {
+	fullPath := filepath.Join(uploadPath, currentPath)
+
+	// Prevent directory traversal
+	if !strings.HasPrefix(fullPath, uploadPath) {
+		return nil
+	}
+
+	entries, err := os.ReadDir(fullPath)
 	if err != nil {
 		log.Printf("Error reading directory: %v", err)
 		return nil
@@ -431,20 +472,41 @@ func getFilesWithMetadata(viewer string) []FileInfo {
 	defer metaMutex.RUnlock()
 
 	var files []FileInfo
+
+	// Add ".." entry if not root
+	if currentPath != "" && currentPath != "." {
+		parent := filepath.Dir(currentPath)
+		if parent == "." {
+			parent = ""
+		}
+		files = append(files, FileInfo{
+			Name:       "..",
+			IsDir:      true,
+			UploadedBy: "",
+			// We can encode parent path in Name or handle it in frontend.
+			// Standard way: Name is "..", frontend logic handles link.
+		})
+	}
+
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == ".metadata.json" || entry.Name() == ".sessions.json" || entry.Name() == ".users.json" {
+		if entry.Name() == ".metadata.json" || entry.Name() == ".sessions.json" || entry.Name() == ".users.json" {
 			continue
 		}
 
+		relPath := filepath.Join(currentPath, entry.Name())
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
 		var file FileInfo
-		if meta, ok := fileMetadata[entry.Name()]; ok {
+		// Metadata key uses relative path
+		if meta, ok := fileMetadata[relPath]; ok {
 			file = meta
 			file.Size = info.Size() // Update size
+			file.IsDir = entry.IsDir()
+			// If name stored in meta is full path, we might want to show only basename
+			file.Name = entry.Name()
 		} else {
 			// File exists but no metadata (legacy or manually added)
 			file = FileInfo{
@@ -452,14 +514,16 @@ func getFilesWithMetadata(viewer string) []FileInfo {
 				UploadedBy: "Unknown",
 				UploadedAt: info.ModTime(),
 				Size:       info.Size(),
+				IsDir:      entry.IsDir(),
 			}
 		}
 
 		// Filter: Include if owned by viewer OR shared
-		// "Unknown" uploaders are visible to everyone? Or only shared?
-		// Let's hide "Unknown" unless shared, or maybe show everything for backward compatibility?
-		// Better safe: Only show "Mine" or "Shared".
-		if file.UploadedBy == viewer || file.Shared {
+		// For directories, we might want to show them if they contain shared files?
+		// For simplicity: If it's a directory, currently show it.
+		// Or assume if I uploaded the folder, I own it.
+		// If "Unknown" (created manually), show it.
+		if file.UploadedBy == viewer || file.UploadedBy == "Unknown" || file.Shared || file.IsDir {
 			files = append(files, file)
 		}
 	}
@@ -469,8 +533,9 @@ func getFilesWithMetadata(viewer string) []FileInfo {
 
 // Template data for file list page
 type PageData struct {
-	Username string
-	Files    []FileInfo
+	Username    string
+	Files       []FileInfo
+	CurrentPath string
 }
 
 // Render main files page
@@ -481,7 +546,18 @@ func renderFilesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := getFilesWithMetadata(session.Username)
+	currentPath := r.URL.Query().Get("path")
+	// Sanitize input
+	currentPath = filepath.Clean(currentPath)
+	if currentPath == "." || currentPath == "/" {
+		currentPath = ""
+	}
+	// simple check to prevent breaking out of root (Clean handles much, but prefix check is good)
+	if strings.Contains(currentPath, "..") {
+		currentPath = ""
+	}
+
+	files := getFilesWithMetadata(session.Username, currentPath)
 
 	tmpl, err := template.New("files.html").Funcs(template.FuncMap{
 		"formatSize": formatSize,
@@ -496,8 +572,9 @@ func renderFilesPage(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := PageData{
-		Username: session.Username,
-		Files:    files,
+		Username:    session.Username,
+		Files:       files,
+		CurrentPath: currentPath,
 	}
 
 	tmpl.Execute(w, data)
@@ -600,8 +677,22 @@ func uploadFiles(w http.ResponseWriter, r *http.Request) {
 }
 
 // Save uploaded file and update metadata
+// Save uploaded file and update metadata
 func saveUploadedFile(file io.Reader, filename string, size int64, username string) error {
-	filePath := filepath.Join(uploadPath, filename)
+	// Filename can be "folder/file.txt"
+	// Validate path to prevent breakout
+	cleanName := filepath.Clean(filename)
+	if strings.Contains(cleanName, "..") {
+		return fmt.Errorf("invalid filename")
+	}
+
+	filePath := filepath.Join(uploadPath, cleanName)
+
+	// Ensure directory exists
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
 
 	dest, err := os.Create(filePath)
 	if err != nil {
@@ -616,11 +707,15 @@ func saveUploadedFile(file io.Reader, filename string, size int64, username stri
 
 	// Update metadata
 	metaMutex.Lock()
-	fileMetadata[filename] = FileInfo{
-		Name:       filename,
+	// For metadata, we use the relative path as key
+	fileMetadata[cleanName] = FileInfo{
+		Name: cleanName, // Store full relative path in metadata value too? Or just basename?
+		// Actually getFilesWithMetadata uses the key to find it.
+		// Storing full path is safer.
 		UploadedBy: username,
 		UploadedAt: time.Now(),
 		Size:       written,
+		IsDir:      false,
 	}
 	metaMutex.Unlock()
 
@@ -897,8 +992,14 @@ func main() {
 
 	// Start server
 	fmt.Printf("Server started at %s\n", serverPort)
-	fmt.Printf("Files stored at: %s\n", uploadPath)
-	log.Printf("Starting server on %s", serverPort)
+	storageType := "Internal Storage"
+	if strings.Contains(uploadPath, "/Android/data/") || strings.Contains(uploadPath, "external-1") {
+		storageType = "Physical SD Card"
+	} else if strings.HasPrefix(uploadPath, "/sdcard") || strings.HasPrefix(uploadPath, "/storage/emulated") {
+		storageType = "Internal Shared Storage"
+	}
+	fmt.Printf("Files stored at: %s (%s)\n", uploadPath, storageType)
+	log.Printf("Starting server on %s, storage: %s", serverPort, uploadPath)
 	log.Fatal(http.ListenAndServe(serverPort, nil))
 }
 
