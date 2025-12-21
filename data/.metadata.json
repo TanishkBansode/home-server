@@ -1,1 +1,23 @@
-{}
+{
+  "private_u1.txt": {
+    "name": "private_u1.txt",
+    "uploaded_by": "TestUser",
+    "uploaded_at": "2025-12-21T16:25:29.05405+05:30",
+    "size": 15,
+    "shared": false
+  },
+  "shared_u1.txt": {
+    "name": "shared_u1.txt",
+    "uploaded_by": "TestUser",
+    "uploaded_at": "2025-12-21T16:25:29.148545255+05:30",
+    "size": 14,
+    "shared": true
+  },
+  "test_share.txt": {
+    "name": "test_share.txt",
+    "uploaded_by": "TestUser",
+    "uploaded_at": "2025-12-21T16:04:43.946428202+05:30",
+    "size": 20,
+    "shared": false
+  }
+}

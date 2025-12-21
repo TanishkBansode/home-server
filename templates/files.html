@@ -227,6 +227,51 @@
             transform: none;
         }
 
+        .folder-btn {
+            background: var(--card);
+            border: 1px solid var(--border);
+            color: var(--text);
+            flex: 0 0 auto;
+        }
+
+        .folder-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            margin-top: 1.5rem;
+            display: none;
+        }
+
+        .progress-container.show {
+            display: block;
+        }
+
+        .progress-info {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--text-muted);
+        }
+
+        .progress-bar-bg {
+            height: 8px;
+            background: var(--bg);
+            border-radius: 4px;
+            overflow: hidden;
+            border: 1px solid var(--border);
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: var(--gradient);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
         /* Files Section */
         .files-card {
             background: var(--card);
@@ -505,6 +550,12 @@
             color: white;
         }
 
+        .action-btn.shared {
+            color: var(--success);
+            border-color: var(--success);
+            background: rgba(40, 167, 69, 0.1);
+        }
+
         .action-btn.delete:hover {
             background: var(--danger);
             border-color: var(--danger);
@@ -522,7 +573,7 @@
             opacity: 0.5;
         }
 
-        /* Modal */
+        /* Modals */
         .modal-overlay {
             display: none;
             position: fixed;
@@ -589,6 +640,34 @@
         .modal-btn.delete {
             background: var(--danger);
             color: white;
+        }
+
+        /* Share Modal */
+        .share-link-group {
+            display: flex;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+
+        .share-link-group input {
+            margin-bottom: 0;
+            background: var(--bg);
+            color: var(--text);
+            border: 1px solid var(--border);
+        }
+
+        .copy-btn {
+            padding: 0 1rem;
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text);
+            cursor: pointer;
+        }
+
+        .copy-btn:hover {
+            border-color: var(--accent);
+            color: var(--accent);
         }
 
         /* Lightbox */
@@ -795,28 +874,47 @@
         <!-- Upload Section -->
         <div class="upload-card fade-in">
             <h2><i class="fas fa-cloud-upload-alt"></i> Upload Files</h2>
-            <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data">
+            <div id="uploadFormContainer">
                 <div class="dropzone" id="dropzone">
-                    <input type="file" name="files" id="fileInput" multiple
-                        accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.zip,.rar">
+                    <!-- File inputs (hidden) -->
+                    <input type="file" id="fileInput" multiple>
+                    <input type="file" id="folderInput" webkitdirectory directory multiple>
+
                     <div class="dropzone-icon">
                         <i class="fas fa-cloud-upload-alt"></i>
                     </div>
                     <p class="dropzone-text">
                         <strong>Click to select</strong> or drag files here<br>
-                        <small>Upload multiple files at once</small>
+                        <small>Upload multiple files or entire folders</small>
                     </p>
                 </div>
+
                 <div class="selected-files" id="selectedFiles">
                     <h4>Selected files:</h4>
                     <div class="file-preview" id="filePreview"></div>
                 </div>
+
                 <div class="upload-actions">
-                    <button type="submit" class="upload-btn" id="uploadBtn" disabled>
+                    <button type="button" class="upload-btn folder-btn"
+                        onclick="document.getElementById('folderInput').click()">
+                        <i class="fas fa-folder-plus"></i> Select Folder
+                    </button>
+                    <button type="button" class="upload-btn" id="uploadBtn" disabled onclick="uploadFiles()">
                         <i class="fas fa-upload"></i> Upload Files
                     </button>
                 </div>
-            </form>
+
+                <!-- Progress Bar -->
+                <div class="progress-container" id="progressContainer">
+                    <div class="progress-info">
+                        <span id="progressText">Uploading...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div class="progress-bar-bg">
+                        <div class="progress-bar" id="progressBar"></div>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Files Section -->
@@ -855,18 +953,26 @@
                             <div class="meta">{{.UploadedBy}} • {{formatSize .Size}}</div>
                         </div>
                         <div class="actions">
+                            {{if eq .UploadedBy $.Username}}
+                            <button class="action-btn {{if .Shared}}shared{{end}}"
+                                onclick="event.stopPropagation(); toggleShare('{{.Name}}', this)" title="Share">
+                                <i class="fas {{if .Shared}}fa-share-alt{{else}}fa-lock{{end}}"></i>
+                            </button>
                             <button class="action-btn" onclick="event.stopPropagation(); renameFile('{{.Name}}')"
                                 title="Rename">
                                 <i class="fas fa-edit"></i>
                             </button>
+                            {{end}}
                             <a href="/download?file={{.Name}}" class="action-btn" onclick="event.stopPropagation()"
                                 title="Download">
                                 <i class="fas fa-download"></i>
                             </a>
+                            {{if eq .UploadedBy $.Username}}
                             <button class="action-btn delete"
                                 onclick="event.stopPropagation(); confirmDelete('{{.Name}}')" title="Delete">
                                 <i class="fas fa-trash"></i>
                             </button>
+                            {{end}}
                         </div>
                     </div>
                 </div>
@@ -901,19 +1007,27 @@
                             <td class="meta-text">{{formatSize .Size}}</td>
                             <td>
                                 <div class="actions">
+                                    {{if eq .UploadedBy $.Username}}
+                                    <button class="action-btn {{if .Shared}}shared{{end}}"
+                                        onclick="toggleShare('{{.Name}}', this)" title="Share">
+                                        <i class="fas {{if .Shared}}fa-share-alt{{else}}fa-lock{{end}}"></i>
+                                    </button>
                                     <button class="action-btn" onclick="renameFile('{{.Name}}')" title="Rename">
                                         <i class="fas fa-edit"></i>
                                     </button>
+                                    {{end}}
                                     <a href="/download?file={{.Name}}" class="action-btn" title="Download">
                                         <i class="fas fa-download"></i>
                                     </a>
                                     <a href="/files/{{.Name}}" target="_blank" class="action-btn" title="View">
                                         <i class="fas fa-eye"></i>
                                     </a>
+                                    {{if eq .UploadedBy $.Username}}
                                     <button class="action-btn delete" onclick="confirmDelete('{{.Name}}')"
                                         title="Delete">
                                         <i class="fas fa-trash"></i>
                                     </button>
+                                    {{end}}
                                 </div>
                             </td>
                         </tr>
@@ -952,6 +1066,23 @@
             <div class="modal-actions" style="margin-top: 1rem;">
                 <button class="modal-btn cancel" onclick="closeModal('deleteModal')">Cancel</button>
                 <button class="modal-btn delete" onclick="submitDelete()">Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Share Modal -->
+    <div class="modal-overlay" id="shareModal">
+        <div class="modal">
+            <h3><i class="fas fa-share-alt"></i> Share File</h3>
+            <p>This file is now public. Anyone with the link can view it.</p>
+            <div class="share-link-group" style="margin-top: 1rem;">
+                <input type="text" id="shareLinkInput" readonly>
+                <button class="copy-btn" onclick="copyShareLink()">
+                    <i class="fas fa-copy"></i>
+                </button>
+            </div>
+            <div class="modal-actions">
+                <button class="modal-btn confirm" onclick="closeModal('shareModal')">Done</button>
             </div>
         </div>
     </div>
@@ -1126,26 +1257,48 @@
 
         // File input handling
         const fileInput = document.getElementById('fileInput');
+        const folderInput = document.getElementById('folderInput');
         const dropzone = document.getElementById('dropzone');
         const selectedFiles = document.getElementById('selectedFiles');
         const filePreview = document.getElementById('filePreview');
         const uploadBtn = document.getElementById('uploadBtn');
 
-        fileInput.addEventListener('change', updateFilePreview);
+        // Unified file list
+        let filesToUpload = [];
+
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+        folderInput.addEventListener('change', (e) => handleFiles(e.target.files));
+
+        function handleFiles(files) {
+            if (files.length > 0) {
+                // Add new files to existing list
+                filesToUpload = [...filesToUpload, ...Array.from(files)];
+                updateFilePreview();
+            }
+        }
 
         function updateFilePreview() {
-            const files = fileInput.files;
-            if (files.length > 0) {
+            if (filesToUpload.length > 0) {
                 filePreview.innerHTML = '';
-                for (let i = 0; i < files.length; i++) {
+                // Show first 10 files
+                const maxPreview = 10;
+                for (let i = 0; i < Math.min(filesToUpload.length, maxPreview); i++) {
                     const tag = document.createElement('span');
                     tag.className = 'file-tag';
-                    tag.innerHTML = `<i class="fas fa-file"></i> ${files[i].name}`;
+                    tag.innerHTML = `<i class="fas fa-file"></i> ${filesToUpload[i].name}`;
                     filePreview.appendChild(tag);
                 }
+
+                if (filesToUpload.length > maxPreview) {
+                    const moreTag = document.createElement('span');
+                    moreTag.className = 'file-tag';
+                    moreTag.textContent = `+${filesToUpload.length - maxPreview} more`;
+                    filePreview.appendChild(moreTag);
+                }
+
                 selectedFiles.classList.add('show');
                 uploadBtn.disabled = false;
-                uploadBtn.innerHTML = `<i class="fas fa-upload"></i> Upload ${files.length} File${files.length > 1 ? 's' : ''}`;
+                uploadBtn.innerHTML = `<i class="fas fa-upload"></i> Upload ${filesToUpload.length} File${filesToUpload.length > 1 ? 's' : ''}`;
             } else {
                 selectedFiles.classList.remove('show');
                 uploadBtn.disabled = true;
@@ -1172,9 +1325,67 @@
         });
 
         dropzone.addEventListener('drop', (e) => {
-            fileInput.files = e.dataTransfer.files;
-            updateFilePreview();
+            handleFiles(e.dataTransfer.files);
         });
+
+        // Dropzone click triggers standard file input
+        dropzone.addEventListener('click', (e) => {
+            if (e.target.tagName !== 'INPUT') {
+                fileInput.click();
+            }
+        });
+
+        // Upload Logic with Progress
+        function uploadFiles() {
+            if (filesToUpload.length === 0) return;
+
+            const formData = new FormData();
+            filesToUpload.forEach(file => {
+                formData.append('files', file);
+            });
+
+            const xhr = new XMLHttpRequest();
+            const progressContainer = document.getElementById('progressContainer');
+            const progressBar = document.getElementById('progressBar');
+            const progressPercent = document.getElementById('progressPercent');
+            const progressText = document.getElementById('progressText');
+
+            progressContainer.classList.add('show');
+            uploadBtn.disabled = true;
+
+            xhr.upload.addEventListener('progress', (e) => {
+                if (e.lengthComputable) {
+                    const percent = Math.round((e.loaded / e.total) * 100);
+                    progressBar.style.width = percent + '%';
+                    progressPercent.textContent = percent + '%';
+                    progressText.textContent = `Uploading ${filesToUpload.length} file(s)...`;
+                }
+            });
+
+            xhr.addEventListener('load', () => {
+                if (xhr.status === 200 || xhr.status === 303) {
+                    progressText.textContent = 'Upload complete!';
+                    progressBar.style.width = '100%';
+                    progressPercent.textContent = '100%';
+                    setTimeout(() => {
+                        window.location.reload();
+                    }, 500);
+                } else {
+                    progressText.textContent = 'Upload failed!';
+                    progressText.style.color = 'var(--danger)';
+                    uploadBtn.disabled = false;
+                }
+            });
+
+            xhr.addEventListener('error', () => {
+                progressText.textContent = 'Upload error!';
+                progressText.style.color = 'var(--danger)';
+                uploadBtn.disabled = false;
+            });
+
+            xhr.open('POST', '/upload');
+            xhr.send(formData);
+        }
 
         // Search
         const searchInput = document.getElementById('searchInput');
@@ -1272,6 +1483,52 @@
 
             document.body.appendChild(form);
             form.submit();
+        }
+
+        // Share
+        function toggleShare(filename, btn) {
+            const formData = new FormData();
+            formData.append('fileName', filename);
+
+            fetch('/share', {
+                method: 'POST',
+                body: formData
+            })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.shared) {
+                        // Update icon to shared
+                        const icon = btn.querySelector('i');
+                        icon.className = 'fas fa-share-alt';
+                        btn.classList.add('shared');
+                        btn.classList.remove('locked');
+
+                        // Show modal with link
+                        const link = window.location.origin + '/shared/' + encodeURIComponent(filename);
+                        document.getElementById('shareLinkInput').value = link;
+                        openModal('shareModal');
+                    } else {
+                        // Update icon to locked
+                        const icon = btn.querySelector('i');
+                        icon.className = 'fas fa-lock';
+                        btn.classList.remove('shared');
+                        btn.classList.add('locked');
+                    }
+                })
+                .catch(error => console.error('Error toggling share:', error));
+        }
+
+        function copyShareLink() {
+            const input = document.getElementById('shareLinkInput');
+            input.select();
+            document.execCommand('copy');
+
+            const btn = document.querySelector('.copy-btn');
+            const originalHtml = btn.innerHTML;
+            btn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => {
+                btn.innerHTML = originalHtml;
+            }, 2000);
         }
 
         // Close modals on overlay click

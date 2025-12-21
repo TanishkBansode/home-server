@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,6 +51,7 @@ type FileInfo struct {
 	UploadedBy string    `json:"uploaded_by"`
 	UploadedAt time.Time `json:"uploaded_at"`
 	Size       int64     `json:"size"`
+	Shared     bool      `json:"shared"`
 }
 
 // Session stores user session data
@@ -417,8 +419,8 @@ func requireAuth(handler http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Get file list with metadata
-func getFilesWithMetadata() []FileInfo {
+// Get file list with metadata (filtered by viewer)
+func getFilesWithMetadata(viewer string) []FileInfo {
 	entries, err := os.ReadDir(uploadPath)
 	if err != nil {
 		log.Printf("Error reading directory: %v", err)
@@ -430,7 +432,7 @@ func getFilesWithMetadata() []FileInfo {
 
 	var files []FileInfo
 	for _, entry := range entries {
-		if entry.IsDir() || entry.Name() == ".metadata.json" {
+		if entry.IsDir() || entry.Name() == ".metadata.json" || entry.Name() == ".sessions.json" || entry.Name() == ".users.json" {
 			continue
 		}
 
@@ -439,17 +441,26 @@ func getFilesWithMetadata() []FileInfo {
 			continue
 		}
 
+		var file FileInfo
 		if meta, ok := fileMetadata[entry.Name()]; ok {
-			meta.Size = info.Size()
-			files = append(files, meta)
+			file = meta
+			file.Size = info.Size() // Update size
 		} else {
 			// File exists but no metadata (legacy or manually added)
-			files = append(files, FileInfo{
+			file = FileInfo{
 				Name:       entry.Name(),
 				UploadedBy: "Unknown",
 				UploadedAt: info.ModTime(),
 				Size:       info.Size(),
-			})
+			}
+		}
+
+		// Filter: Include if owned by viewer OR shared
+		// "Unknown" uploaders are visible to everyone? Or only shared?
+		// Let's hide "Unknown" unless shared, or maybe show everything for backward compatibility?
+		// Better safe: Only show "Mine" or "Shared".
+		if file.UploadedBy == viewer || file.Shared {
+			files = append(files, file)
 		}
 	}
 
@@ -470,7 +481,7 @@ func renderFilesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	files := getFilesWithMetadata()
+	files := getFilesWithMetadata(session.Username)
 
 	tmpl, err := template.New("files.html").Funcs(template.FuncMap{
 		"formatSize": formatSize,
@@ -639,6 +650,16 @@ func renameFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check permissions
+	metaMutex.RLock()
+	meta, ok := fileMetadata[oldName]
+	metaMutex.RUnlock()
+
+	if ok && meta.UploadedBy != session.Username {
+		http.Error(w, "You don't have permission to rename this file", http.StatusForbidden)
+		return
+	}
+
 	oldPath := filepath.Join(uploadPath, oldName)
 	newPath := filepath.Join(uploadPath, newName)
 
@@ -686,6 +707,16 @@ func deleteFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check permissions
+	metaMutex.RLock()
+	meta, ok := fileMetadata[fileName]
+	metaMutex.RUnlock()
+
+	if ok && meta.UploadedBy != session.Username {
+		http.Error(w, "You don't have permission to delete this file", http.StatusForbidden)
+		return
+	}
+
 	filePath := filepath.Join(uploadPath, fileName)
 
 	err := os.Remove(filePath)
@@ -722,11 +753,97 @@ func downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Permission check?
+	// If it's shared OR owned by user
+	// But getFilesWithMetadata already filters list.
+	// If user manually types URL for someone else's private file, they shouldn't see it.
+
+	metaMutex.RLock()
+	meta, ok := fileMetadata[fileName]
+	metaMutex.RUnlock()
+
+	if ok {
+		if meta.UploadedBy != session.Username && !meta.Shared {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+	}
+
 	filePath := filepath.Join(uploadPath, fileName)
 	w.Header().Set("Content-Disposition", "attachment; filename="+fileName)
 	http.ServeFile(w, r, filePath)
 	log.Printf("File downloaded by %s: %s", session.Username, fileName)
 	logRequest(r, http.StatusOK)
+}
+
+// Toggle file sharing
+func toggleShare(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r)
+	if session == nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	fileName := r.FormValue("fileName")
+	if fileName == "" {
+		http.Error(w, "File name required", http.StatusBadRequest)
+		return
+	}
+
+	metaMutex.Lock()
+	if meta, ok := fileMetadata[fileName]; ok {
+		if meta.UploadedBy != session.Username {
+			metaMutex.Unlock()
+			http.Error(w, "Permission denied", http.StatusForbidden)
+			return
+		}
+
+		meta.Shared = !meta.Shared
+		fileMetadata[fileName] = meta
+		metaMutex.Unlock()
+		saveMetadata()
+
+		// Return JSON response
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"shared": meta.Shared})
+		log.Printf("File sharing toggled by %s: %s (shared: %v)", session.Username, fileName, meta.Shared)
+	} else {
+		metaMutex.Unlock()
+		http.Error(w, "File not found", http.StatusNotFound)
+	}
+}
+
+// Serve shared file (public, no auth)
+func serveSharedFile(w http.ResponseWriter, r *http.Request) {
+	// Extract filename from /shared/{filename}
+	fileName := r.URL.Path[len("/shared/"):]
+	if fileName == "" {
+		http.Error(w, "File not specified", http.StatusBadRequest)
+		return
+	}
+
+	metaMutex.RLock()
+	meta, exists := fileMetadata[fileName]
+	metaMutex.RUnlock()
+
+	if !exists {
+		http.Error(w, "File not found", http.StatusNotFound)
+		return
+	}
+
+	if !meta.Shared {
+		http.Error(w, "This file is not shared", http.StatusForbidden)
+		return
+	}
+
+	filePath := filepath.Join(uploadPath, fileName)
+	http.ServeFile(w, r, filePath)
+	log.Printf("Shared file accessed: %s", fileName)
 }
 
 func main() {
@@ -774,11 +891,51 @@ func main() {
 	http.HandleFunc("/rename", requireAuth(renameFile))
 	http.HandleFunc("/delete", requireAuth(deleteFile))
 	http.HandleFunc("/download", requireAuth(downloadFile))
-	http.Handle("/files/", http.StripPrefix("/files/", http.FileServer(http.Dir(uploadPath))))
+	http.HandleFunc("/share", toggleShare)
+	http.HandleFunc("/shared/", serveSharedFile)
+	http.HandleFunc("/files/", requireAuth(handleServeFile))
 
 	// Start server
 	fmt.Printf("Server started at %s\n", serverPort)
 	fmt.Printf("Files stored at: %s\n", uploadPath)
 	log.Printf("Starting server on %s", serverPort)
 	log.Fatal(http.ListenAndServe(serverPort, nil))
+}
+
+// Serve files with permission check
+func handleServeFile(w http.ResponseWriter, r *http.Request) {
+	session := getSession(r)
+	if session == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	fileName := strings.TrimPrefix(r.URL.Path, "/files/")
+	if fileName == "" {
+		http.Error(w, "File not specified", http.StatusBadRequest)
+		return
+	}
+
+	// Check permissions
+	metaMutex.RLock()
+	meta, ok := fileMetadata[fileName]
+	metaMutex.RUnlock()
+
+	if !ok {
+		// Fail closed: If we don't know who owns it, don't serve it.
+		// Exception: If you really want "Unknown" files to be public, change this.
+		// For now, strict privacy.
+		log.Printf("Access denied to %s (no metadata) for user %s", fileName, session.Username)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	if meta.UploadedBy != session.Username && !meta.Shared {
+		log.Printf("Access denied to %s (private) for user %s", fileName, session.Username)
+		http.Error(w, "Forbidden", http.StatusForbidden)
+		return
+	}
+
+	filePath := filepath.Join(uploadPath, fileName)
+	http.ServeFile(w, r, filePath)
 }
