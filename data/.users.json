@@ -1,0 +1,7 @@
+{
+  "TestUser": {
+    "username": "TestUser",
+    "password_hash": "$2a$10$Zz.4QRT1bv8JnntSatSpc.syXtzaTcnw42j7YIijkAj9VCrNqKFR.",
+    "created_at": "2025-12-21T15:30:36.418403547+05:30"
+  }
+}
